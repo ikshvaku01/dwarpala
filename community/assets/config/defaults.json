@@ -1,0 +1,27 @@
+{
+    "node": [
+        ".env.local",
+        "npm-debug.log",
+        "yarn-error.log"
+    ],
+    "springboot": [
+        ".idea",
+        ".vscode",
+        ".mvn",
+        ".gitattributes",
+        ".gitignore",
+        "target",
+        "mvnw",
+        "mvnw.cmd",
+        "application-dev.yml",
+        "application-test.yml"
+    ],
+    "cpp": [
+        "*.tmp",
+        "*.obj"
+    ],
+    "rust": [
+        "target",
+        "*.lock"
+    ]
+}

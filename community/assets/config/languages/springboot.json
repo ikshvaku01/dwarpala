@@ -1,0 +1,10 @@
+{
+    "ignore": [
+        "target/",
+        "build/",
+        "*.jar",
+        "*.class",
+        "application-prod.yml",
+        "application-prod.properties"
+    ]
+}

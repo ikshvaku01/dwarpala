@@ -1,0 +1,3 @@
+[submodule "enterprise"]
+	path = enterprise
+	url = git@github.com:ikshvaku01/dwarpala-enterprise.git

@@ -1,0 +1,33 @@
+[package]
+name             = "dwarpala"
+version.workspace  = true
+edition.workspace  = true
+rust-version.workspace = true
+description      = "Compile and transform codebases into AI-ready datasets."
+license          = "MIT"
+repository.workspace = true
+keywords         = ["cli", "code-analysis", "ai", "developer-tools"]
+categories       = ["command-line-utilities", "development-tools"]
+publish          = true
+
+[lib]                                   # ← exposes community as a library
+name = "dwarpala"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dwarpala"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace     = true
+chrono.workspace     = true
+clap.workspace       = true
+crossterm.workspace  = true
+dirs.workspace       = true
+ratatui.workspace    = true
+regex.workspace      = true
+serde.workspace      = true
+serde_json.workspace = true
+walkdir.workspace    = true
+notify.workspace     = true
+notify-debouncer-mini.workspace= true
