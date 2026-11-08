@@ -14,6 +14,9 @@
 //!
 //! SECURITY: The private key never leaves this tool. Never commit it.
 
+mod keystore;
+use keystore::{from_hex32, to_hex, Entry};
+use std::path::Path;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
@@ -50,23 +53,29 @@ struct LicenseFile {
     token:   String,
     #[allow(dead_code)]
     #[serde(default)]
-    display: serde_json::Value,
+    display: Value,
 }
+
+fn die(msg: &str) -> ! { eprintln!("❌ {msg}"); std::process::exit(1) }
 
 fn main() {
     let cli = Cli::parse();
+    let kp = keystore::resolve_path(cli.keys.as_deref());
     match cli.cmd {
-        Cmd::Keygen  { kid }                                        => keygen(&kid),
-        Cmd::Sign    { key, kid, tier, sub, org, exp, note, out }  =>
-            sign(&key, &kid, &tier, &sub, &org, exp.as_deref(), note.as_deref(), out.as_deref()),
-        Cmd::Verify  { input, kid }                                => verify(&input, kid.as_deref()),  // ← ADD THIS
-        Cmd::Inspect { input }                                      => inspect(&input),
+        Cmd::Keygen { kid, yes } => keygen(&kp, kid.as_deref(), yes),
+        Cmd::Sign { key, kid, tier, sub, org, exp, note, out } => sign(
+            &kp, key.as_deref(), kid.as_deref(), &tier, &sub, &org,
+            exp.as_deref(), note.as_deref(), out.as_deref()),
+        Cmd::Verify { input, kid } => verify(&kp, &input, kid.as_deref()),
+        Cmd::Inspect { input } => inspect(&input),
     }
 }
 
 #[derive(Parser)]
 #[command(name = "sign_license", about = "Dwarpala license signing tool")]
 struct Cli {
+    /// Key store (default: $DWARPALA_KEYS_FILE, else <config dir>/dwarpala/license-keys.json)
+    #[arg(long, global = true)] keys: Option<String>,
     #[command(subcommand)] cmd: Cmd,
 }
 
@@ -74,13 +83,17 @@ struct Cli {
 enum Cmd {
     /// Generate a new Ed25519 keypair
     Keygen {
-        #[arg(long, default_value = "k1")] kid: String,
+        /// Omit to auto-pick the next unused k<N>
+        #[arg(long)] kid: Option<String>,
+        /// Save without asking
+        #[arg(long, short = 'y')] yes: bool,
     },
     /// Sign and issue a new license
     Sign {
-        /// Base64 private key (seed) from keygen
-        #[arg(long)] key:  String,
-        #[arg(long, default_value = "k1")] kid: String,
+        /// Omit to use the private key stored for --kid
+        #[arg(long)] key: Option<String>,
+        /// Omit to use the newest enabled key
+        #[arg(long)] kid: Option<String>,
         /// pro | team | enterprise
         #[arg(long)] tier: String,
         /// Subject (email or identifier)
@@ -92,7 +105,6 @@ enum Cmd {
         /// Write to this .license file; print JSON to stdout if omitted
         #[arg(long)] out:  Option<String>,
     },
-    /// Decode and display claims from a token or .license file (no sig check)
     Verify {
         /// Token string or path to .license file
         input: String,
@@ -101,89 +113,87 @@ enum Cmd {
     Inspect { input: String },
 }
 
-// ── keygen ───────────────────────────────────────────────────────────────────
+fn keygen(keys_path: &Path, kid: Option<&str>, yes: bool) {
+    let mut store = keystore::load(keys_path).unwrap_or_else(|e| die(&e));
+    let kid = kid.map(String::from).unwrap_or_else(|| store.next_kid());
+    if store.get(&kid).is_some() {
+        die(&format!("kid \"{kid}\" already exists in {}", keys_path.display()));
+    }
 
-fn keygen(kid: &str) {
     let sk   = SigningKey::generate(&mut OsRng);
     let pub_ = sk.verifying_key().to_bytes();
-    let priv_ = sk.to_bytes(); // 32-byte seed
-
-    // Random mask so enc ^ mask = pub_
     let mut mask = [0u8; 32];
     OsRng.fill_bytes(&mut mask);
     let enc: [u8; 32] = std::array::from_fn(|i| pub_[i] ^ mask[i]);
 
-    println!("═══════════════════════════════════════════════════════════");
-    println!(" Dwarpala keygen — kid: {kid}");
-    println!("═══════════════════════════════════════════════════════════");
-    println!();
-    println!("🔐 PRIVATE KEY  (keep secret — pass to `sign --key`)");
-    println!("   {}", B64.encode(priv_));
-    println!();
-    println!("📋 Paste this ObfKey{{}} block into PUBKEYS in enterprise/src/license.rs:");
-    println!();
-    println!("    ObfKey {{");
-    println!("        kid:  \"{kid}\",");
-    print_byte_array("        enc", &enc);
-    print_byte_array("        mask", &mask);
-    println!("    }},");
-    println!();
-    println!("═══════════════════════════════════════════════════════════");
-}
+    let entry = Entry {
+        kid: kid.clone(),
+        generated: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        disable: false,
+        enc: to_hex(&enc),
+        mask: to_hex(&mask),
+        privatekey: B64.encode(sk.to_bytes()),
+    };
 
-struct ObfKey { kid: &'static str, enc: [u8; 32], mask: [u8; 32] }
+    println!("Generated key  kid={kid}  generated={}", entry.generated);
+    println!("  enc : {}\n  mask: {}", entry.enc, entry.mask);
 
-impl ObfKey {
-    #[inline(never)]
-    fn resolve(&self) -> [u8; 32] {
-        let mut k = [0u8; 32];
-        for i in 0..32 {
-            k[i] = std::hint::black_box(self.enc[i]) ^ self.mask[i];
-        }
-        k
+    print!("Save {kid} to {} ? [y/N] ", keys_path.display());
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let save = yes || {
+        let mut s = String::new();
+        std::io::stdin().read_line(&mut s).is_ok() && matches!(s.trim(), "y" | "Y" | "yes")
+    };
+
+    if save {
+        store.keys.push(entry);
+        keystore::save(keys_path, &store).unwrap_or_else(|e| die(&e));
+        println!("✓ saved. Rebuild enterprise to embed the public key.");
+    } else {
+        println!("Not saved. This is the only time the private key is shown:\n{}",
+                 serde_json::to_string_pretty(&entry).unwrap());
     }
-}
-
-static PUBKEYS: &[ObfKey] = &[
-    ObfKey {
-        kid:  "k1",
-        enc:  [
-            0x1d, 0xf8, 0x65, 0x6c, 0xca, 0x29, 0x32, 0xe7,
-            0xfb, 0x27, 0xf9, 0x91, 0x3e, 0x56, 0x9f, 0xa4,
-            0xa7, 0xf4, 0xf8, 0x96, 0x46, 0x04, 0x3b, 0x5f,
-            0xed, 0xcb, 0x55, 0x5a, 0x93, 0xf2, 0x6a, 0xd5,
-        ],
-        mask:  [
-            0xfd, 0xcf, 0x43, 0x29, 0x5b, 0xfe, 0x56, 0xe3,
-            0xe8, 0x9f, 0x1e, 0x99, 0x61, 0x1b, 0x8e, 0xae,
-            0x56, 0xf9, 0xe2, 0x91, 0x9f, 0x68, 0x33, 0x6f,
-            0x37, 0xee, 0x4a, 0x76, 0x65, 0x97, 0x52, 0xdd,
-        ],
-    },
-];
-
-fn print_byte_array(label: &str, b: &[u8; 32]) {
-    println!("{label}:  [");
-    for chunk in b.chunks(8) {
-        print!("            ");
-        for byte in chunk { print!("0x{byte:02x}, "); }
-        println!();
-    }
-    println!("        ],");
 }
 
 // ── sign ─────────────────────────────────────────────────────────────────────
-
 fn sign(
-    key_b64: &str, kid: &str, tier: &str, sub: &str, org: &str,
+    keys_path: &Path, key_arg: Option<&str>, kid_arg: Option<&str>,
+    tier: &str, sub: &str, org: &str,
     exp: Option<&str>, note: Option<&str>, out: Option<&str>,
 ) {
-    // Load private key
-    let key_seed = B64.decode(key_b64.trim())
-        .expect("Invalid base64 private key");
-    let key_arr: [u8; 32] = key_seed.as_slice().try_into()
-        .expect("Private key must be 32 bytes");
+    let store = keystore::load(keys_path).unwrap_or_else(|e| die(&e));
+    let (kid, key_b64): (String, String) = match key_arg {
+        Some(k) => (
+            kid_arg.map(String::from)
+                .unwrap_or_else(|| die("--kid is required when --key is given")),
+            k.to_string(),
+        ),
+        None => {
+            let e = match kid_arg {
+                Some(k) => store.get(k).unwrap_or_else(||
+                    die(&format!("kid \"{k}\" not found in {}", keys_path.display()))),
+                None => store.newest_signing_key().unwrap_or_else(||
+                    die(&format!("no usable signing key in {} - run keygen", keys_path.display()))),
+            };
+            if e.disable { die(&format!("key \"{}\" is disabled", e.kid)); }
+            if e.privatekey.is_empty() { die(&format!("no private key stored for \"{}\"", e.kid)); }
+            (e.kid.clone(), e.privatekey.clone())
+        }
+    };
+
+    let key_seed = B64.decode(key_b64.trim()).expect("Invalid base64 private key");
+    let key_arr: [u8; 32] = key_seed.as_slice().try_into().expect("Private key must be 32 bytes");
     let sk = SigningKey::from_bytes(&key_arr);
+
+    // Catch a private key that doesn't belong to this kid's stored public key.
+    if let Some(e) = store.get(&kid) {
+        if let (Some(enc), Some(mask)) = (from_hex32(&e.enc), from_hex32(&e.mask)) {
+            let expect: [u8; 32] = std::array::from_fn(|i| enc[i] ^ mask[i]);
+            if sk.verifying_key().to_bytes() != expect {
+                die(&format!("private key does not match the stored public key for \"{kid}\""));
+            }
+        }
+    }
 
     // Validate tier
     let tier_lc = tier.to_lowercase();
@@ -253,7 +263,7 @@ fn sign(
 // ── inspect ──────────────────────────────────────────────────────────────────
 
 fn inspect(input: &str) {
-    let token = if std::path::Path::new(input).is_file() {
+    let token = if Path::new(input).is_file() {
         let raw = std::fs::read_to_string(input).expect("Cannot read file");
         let v: Value = serde_json::from_str(&raw).expect("Invalid JSON");
         v["token"].as_str().expect("No 'token' field").to_string()
@@ -282,9 +292,9 @@ fn inspect(input: &str) {
     println!("\nNote: signature NOT verified here — use the enterprise binary.");
 }
 
-fn verify(input: &str, expected_kid: Option<&str>) {
+fn verify(keys_path: &Path, input: &str, expected_kid: Option<&str>) {
     // 1. Load token from file or direct input
-    let token = if std::path::Path::new(input).is_file() {
+    let token = if Path::new(input).is_file() {
         let raw = match std::fs::read_to_string(input) {
             Ok(s) => s,
             Err(e) => {
@@ -333,25 +343,19 @@ fn verify(input: &str, expected_kid: Option<&str>) {
     }
 
     // 4. Resolve public key
+    let store = keystore::load(keys_path).unwrap_or_else(|e| die(&e));
     let kid = expected_kid.unwrap_or(&hdr.kid);
-    let obf = match PUBKEYS.iter().find(|k| k.kid == kid) {
-        Some(k) => k,
-        None => {
-            eprintln!("❌ Unknown key id: \"{}\" (available: {})", 
-                kid, 
-                PUBKEYS.iter().map(|k| k.kid).collect::<Vec<_>>().join(", ")
-            );
-            std::process::exit(1);
-        }
+    let entry = store.get(kid).unwrap_or_else(|| die(&format!(
+        "Unknown key id \"{kid}\" (available: {})",
+        store.keys.iter().map(|k| k.kid.as_str()).collect::<Vec<_>>().join(", "))));
+    if entry.disable { die(&format!("key \"{kid}\" is disabled")); }
+    let vk_bytes: [u8; 32] = match (from_hex32(&entry.enc), from_hex32(&entry.mask)) {
+        (Some(e), Some(m)) => std::array::from_fn(|i| e[i] ^ m[i]),
+        _ => die("stored enc/mask are not valid 64-character hex"),
     };
-    
-    let vk_bytes = obf.resolve();
     let vk = match VerifyingKey::from_bytes(&vk_bytes) {
         Ok(k) => k,
-        Err(e) => {
-            eprintln!("❌ Invalid public key for kid \"{}\": {}", kid, e);
-            std::process::exit(1);
-        }
+        Err(e) => die(&format!("Invalid public key for \"{kid}\": {e}")),
     };
 
     // 5. Verify signature
@@ -395,6 +399,7 @@ fn verify(input: &str, expected_kid: Option<&str>) {
     println!("  Tier:        {}", claims.tier.to_uppercase());
     println!("  Subject:     {}{}", claims.sub, 
         if claims.org.is_empty() { "".to_string() } else { format!(" ({})", claims.org) });
+    println!("  Token ID:    {}", claims.jti);
     println!("  Issued:      {}", format_timestamp(claims.iat));
     println!("  Expires:     {}", 
         claims.exp.map(|e| format_timestamp(e)).unwrap_or_else(|| "perpetual".to_string()));
@@ -426,16 +431,9 @@ fn format_timestamp(ts: i64) -> String {
 
 /// Parse YYYY-MM-DD into a Unix timestamp (midnight UTC).
 fn parse_date_to_unix(s: &str) -> i64 {
-    let p: Vec<i64> = s.split('-')
-        .map(|x| x.parse::<i64>().expect("Invalid date component"))
-        .collect();
-    assert_eq!(p.len(), 3, "exp must be YYYY-MM-DD");
-    let (y, m, d) = (p[0], p[1], p[2]);
-    // Days from Julian Day Number to Unix epoch (1970-01-01 = JDN 2440588)
-    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
-    let c  = y / 100;
-    let jd = (365.25 * (y + 4716) as f64) as i64
-           + (30.6001 * (m + 1) as f64) as i64
-           + d - 1524;
-    (jd - 2_440_588) * 86_400
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .expect("exp must be YYYY-MM-DD")
+        .and_hms_opt(0, 0, 0).unwrap()
+        .and_utc()
+        .timestamp()
 }

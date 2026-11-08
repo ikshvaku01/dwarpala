@@ -1,5 +1,7 @@
-
-use crate::core::compiler::build_dir_tree_string;
+use crate::{
+    core::compiler::build_dir_tree_string,
+    output::OutputStyle,
+};
 use std::{
     fs, io::{BufWriter, Write},
     path::PathBuf,
@@ -20,6 +22,7 @@ pub fn spawn_worker(
     paths:         Vec<PathBuf>,
     patterns:      Vec<String>,
     dir_structure: bool,
+    style:         OutputStyle,
     send:          impl Fn(Msg) + Send + 'static,
 ) {
     thread::spawn(move || {
@@ -32,18 +35,17 @@ pub fn spawn_worker(
             Err(e) => { send(Msg::Err(e.to_string())); return; }
         };
         let mut w   = BufWriter::new(file);
-        let sep     = "-".repeat(50);
 
         if dir_structure {
             let tree = build_dir_tree_string(&root, &patterns);
-            let _ = writeln!(w, "{sep}\nDirectory Structure\n{sep}\n\n{tree}\n");
+            let _ = writeln!(w, "{}\n\n{tree}\n", style.dir_header());
         }
 
         for (i, path) in paths.iter().enumerate() {
             let rel = path.strip_prefix(&root).unwrap_or(path)
                 .to_string_lossy().replace('\\', "/");
             send(Msg::Progress { done: i, total, file: rel.clone() });
-            let _ = writeln!(w, "{sep}\nFILE: {rel}\n{sep}\n");
+            let _ = writeln!(w, "{}\n", style.file_header(&rel));
             if let Ok(content) = fs::read_to_string(path) {
                 let _ = writeln!(w, "{content}\n");
             }
