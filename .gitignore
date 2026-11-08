@@ -1,3 +1,6 @@
 /target
 .git
 *.license
+.idea
+license-keys.json*
+HELP.md

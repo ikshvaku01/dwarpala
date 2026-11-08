@@ -1,27 +1,21 @@
 {
     "node": [
-        ".env.local",
-        "npm-debug.log",
-        "yarn-error.log"
+        "node_modules/", "dist/", "build/", "bower_components/", "jspm_packages/",
+        ".next/", ".nuxt/", ".svelte-kit/", ".turbo/", ".parcel-cache/", ".angular/",
+        ".nyc_output/", ".serverless/", ".vercel/", ".netlify/"
     ],
+    "python": [
+        "__pycache__/", "*.pyc", "*.pyo", ".venv/", "venv/", ".tox/", ".nox/",
+        ".mypy_cache/", ".pytest_cache/", ".ruff_cache/", "*.egg-info/", ".eggs/", "htmlcov/"
+    ],
+    "rust": ["target/"],
+    "maven": ["target/"],
     "springboot": [
-        ".idea",
-        ".vscode",
-        ".mvn",
-        ".gitattributes",
-        ".gitignore",
-        "target",
-        "mvnw",
-        "mvnw.cmd",
-        "application-dev.yml",
-        "application-test.yml"
+        "target/", "build/", ".mvn/", "mvnw", "mvnw.cmd",
+        "application-dev.yml", "application-test.yml",
+        "application-prod.yml", "application-prod.properties"
     ],
-    "cpp": [
-        "*.tmp",
-        "*.obj"
-    ],
-    "rust": [
-        "target",
-        "*.lock"
-    ]
+    "dotnet": ["bin/", "obj/"],
+    "rails": ["log/", "tmp/"],
+    "cpp": ["build/", "*.out"]
 }
